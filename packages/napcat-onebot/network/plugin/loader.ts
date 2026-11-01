@@ -10,31 +10,6 @@ import {
 } from './types';
 const require = createRequire(import.meta.url);
 
-/** 允许加载的官方插件 ID 白名单。不在表内的插件一律拒绝加载。 */
-const OFFICIAL_PLUGIN_IDS = new Set<string>([
-  'napcat-plugin-builtin',
-  'napcat-plugin-cleaner',
-  'napcat-plugin-ssqq',
-  'napcat-plugin-qce',
-]);
-
-/**
- * 敏感词表：插件源码命中（黑灰产 / 支付发卡相关）即拒绝加载。
- * 仅作启发式威慑，混淆/编码可绕过，并非唯一防线。
- */
-const SENSITIVE_KEYWORDS: string[] = [
-  '发卡', '卡密', '卡网', '自动发卡', '寄售', '代刷', '刷单', '跑分',
-  '四件套', '洗钱', '黑产', '灰产', '博彩', '赌博', '菠菜', '涉黄',
-  '色情', '收款码', '代付', '担保交易', '第三方支付', 'USDT',
-];
-
-/** 纳入敏感词检测的源码扩展名 */
-const SCAN_EXTS = new Set(['.js', '.mjs', '.cjs', '.ts']);
-/** 跳过敏感词扫描的目录名 */
-const SCAN_SKIP_DIRS = new Set(['data', 'node_modules', '.git']);
-/** 单文件扫描大小上限，避免超大文件拖慢启动 */
-const SCAN_MAX_FILE_BYTES = 5 * 1024 * 1024;
-
 /**
  * 插件加载器
  * 负责扫描、加载和导入插件模块
@@ -146,15 +121,6 @@ export class PluginLoader {
       // 获取插件 ID（包名或目录名）
       const pluginId = packageJson?.name || dirname;
 
-      // 官方白名单 + 敏感词校验：被拒绝的插件视为不可见，
-      // 不入列表、不加载、更不会被动态导入执行。
-      // 该检查置于此处统一拦截 scanPlugins 与 rescanPlugin（安装/重载）两条路径。
-      const rejectReason = this.getRejectReason(pluginId, pluginDir);
-      if (rejectReason) {
-        this.logger.logWarn(`[PluginLoader] Rejected ${pluginId} (${dirname}): ${rejectReason}`);
-        return null;
-      }
-
       // 确定入口文件
       const entryFile = this.findEntryFile(pluginDir, packageJson);
       const entryPath = entryFile ? path.join(pluginDir, entryFile) : undefined;
@@ -230,75 +196,6 @@ export class PluginLoader {
     }
 
     return null;
-  }
-
-  /** 是否为白名单内的官方插件 */
-  isOfficialPlugin (pluginId: string): boolean {
-    return OFFICIAL_PLUGIN_IDS.has(pluginId);
-  }
-
-  /**
-   * 判断插件是否应被拒绝（非官方 / 命中敏感词）。
-   * @returns 拒绝原因；通过校验返回 null
-   */
-  private getRejectReason (pluginId: string, pluginDir: string): string | null {
-    const hit = this.scanSensitiveWords(pluginDir);
-    if (this.isOfficialPlugin(pluginId)) {
-      return null;
-    }
-    if (hit) {
-      return `sensitive keyword "${hit}"`;
-    }
-    return 'not in official plugin whitelist';
-  }
-
-  /**
-   * 递归扫描插件目录内源码是否命中敏感词（黑灰产 / 支付发卡）。
-   * @returns 命中的敏感词；未命中返回 null
-   */
-  scanSensitiveWords (pluginDir: string): string | null {
-    const visit = (dir: string): string | null => {
-      let items: fs.Dirent[];
-      try {
-        items = fs.readdirSync(dir, { withFileTypes: true });
-      } catch {
-        return null;
-      }
-      for (const item of items) {
-        if (item.isDirectory()) {
-          if (SCAN_SKIP_DIRS.has(item.name)) {
-            continue;
-          }
-          const hit = visit(path.join(dir, item.name));
-          if (hit) {
-            return hit;
-          }
-          continue;
-        }
-        if (!item.isFile()) {
-          continue;
-        }
-        if (!SCAN_EXTS.has(path.extname(item.name).toLowerCase())) {
-          continue;
-        }
-        const filePath = path.join(dir, item.name);
-        try {
-          if (fs.statSync(filePath).size > SCAN_MAX_FILE_BYTES) {
-            continue;
-          }
-          const content = fs.readFileSync(filePath, 'utf-8');
-          for (const word of SENSITIVE_KEYWORDS) {
-            if (content.includes(word)) {
-              return word;
-            }
-          }
-        } catch {
-          // 读取失败忽略该文件
-        }
-      }
-      return null;
-    };
-    return visit(pluginDir);
   }
 
   /**
